@@ -1,0 +1,332 @@
+---
+title: ""
+author: ""
+date: "3/20/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+# These are the packages you will need for this activity.
+packages_needed <- c("tidyverse", "devtools", "lme4", 
+                     "lattice", "lmtest", "randomNames", "janitor", 
+                     "lubridate", "sandwich")
+
+package.check <- lapply(
+  packages_needed,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE, 
+      repos = "https://cloud.r-project.org/") 
+    }
+  }
+)
+
+# Remove objects no longer needed
+rm(packages_needed, package.check)
+```
+
+
+```{r include=FALSE}
+library(tidyverse)
+library(lme4)
+library(myStarship)
+library(readxl)
+library(janitor)
+library(lubridate)
+library(dplyr)
+library(sandwich)
+```
+
+
+```{r include=FALSE}
+setwd("")
+
+injury_data <- read_excel("injuries_2010_2020.xlsx", sheet = 7)
+
+injury_data <- subset(injury_data, select = -c(3)) #removes column 3, acquired
+```
+
+
+```{r include=FALSE}
+cleaning_injury <- injury_data %>%
+  mutate(type = str_extract(string = injury_data$Notes, pattern = "\\([^()]*\\)")) %>% #extracts all parentheses 
+  drop_na() %>%
+  mutate(type = str_replace_all(type, "\\*|\\(|\\)", "")) #remove parentheses
+
+cleaning_injury_types <- cleaning_injury %>%
+  mutate(type_num = case_when(
+    grepl("knee", Notes, ignore.case = TRUE) ~ 1,
+    grepl("MCL", Notes, ignore.case = TRUE) ~ 1,
+    grepl("ACL", Notes, ignore.case = TRUE) ~ 1,
+    grepl("patella tendon", Notes, ignore.case = TRUE) ~ 1,
+    grepl("hand", Notes, ignore.case = TRUE) ~ 2,
+    grepl("wrist", Notes, ignore.case = TRUE) ~ 2,
+    grepl("finger", Notes, ignore.case = TRUE) ~ 2,
+    grepl("thumb", Notes, ignore.case = TRUE) ~ 2,
+    grepl("back", Notes, ignore.case = TRUE) ~ 3,
+    grepl("spinal", Notes, ignore.case = TRUE) ~ 3,
+    grepl("foot", Notes, ignore.case = TRUE) ~ 4,
+    grepl("heel", Notes, ignore.case = TRUE) ~ 4,
+    grepl("ankle", Notes, ignore.case = TRUE) ~ 4,
+    grepl("toe", Notes, ignore.case = TRUE) ~ 4,
+    grepl("hip", Notes, ignore.case = TRUE) ~ 5,
+    grepl("groin", Notes, ignore.case = TRUE) ~ 5,
+    grepl("pelvis", Notes, ignore.case = TRUE) ~ 5,
+    grepl("arm", Notes, ignore.case = TRUE) ~ 6,
+    grepl("shoulder", Notes, ignore.case = TRUE) ~ 6,
+    grepl("cuff", Notes, ignore.case = TRUE) ~ 6,
+    grepl("tricep", Notes, ignore.case = TRUE) ~ 6,
+    grepl("bicep", Notes, ignore.case = TRUE) ~ 6,
+    grepl("elbow", Notes, ignore.case = TRUE) ~ 6,
+    grepl("cuff", Notes, ignore.case = TRUE) ~ 6,
+    grepl("leg", Notes, ignore.case = TRUE) ~ 7,
+    grepl("hamstring", Notes, ignore.case = TRUE) ~ 7,
+    grepl("quadricep", Notes, ignore.case = TRUE) ~ 7,
+    grepl("adductor", Notes, ignore.case = TRUE) ~ 7,
+    grepl("tibia", Notes, ignore.case = TRUE) ~ 7,
+    grepl("glute", Notes, ignore.case = TRUE) ~ 7,
+    grepl("calf", Notes, ignore.case = TRUE) ~ 7,
+    grepl("achilles", Notes, ignore.case = TRUE) ~ 7,
+    grepl("thigh", Notes, ignore.case = TRUE) ~ 7,
+    grepl("shin", Notes, ignore.case = TRUE) ~ 7,
+    grepl("head", Notes, ignore.case = TRUE) ~ 8,
+    grepl("neck", Notes, ignore.case = TRUE) ~ 8,
+    grepl("jaw", Notes, ignore.case = TRUE) ~ 8,
+    grepl("face", Notes, ignore.case = TRUE) ~ 8,
+    grepl("nose", Notes, ignore.case = TRUE) ~ 8,
+    grepl("concussion", Notes, ignore.case = TRUE) ~ 8,
+    grepl("orbital bone", Notes, ignore.case = TRUE) ~ 8,
+    grepl("cervical", Notes, ignore.case = TRUE) ~ 8,
+    grepl("eye", Notes, ignore.case = TRUE) ~ 8,
+    grepl("torso", Notes, ignore.case = TRUE) ~ 9,
+    grepl("abdominal", Notes, ignore.case = TRUE) ~ 9,
+    grepl("pectoral", Notes, ignore.case = TRUE) ~ 9,
+    grepl("hernia", Notes, ignore.case = TRUE) ~ 9,
+    grepl("appendectomy", Notes, ignore.case = TRUE) ~ 9,
+    grepl("oblique", Notes, ignore.case = TRUE) ~ 9,
+    grepl("rib", Notes, ignore.case = TRUE) ~ 9
+  )) %>%
+  drop_na() #approx 9717-8378 sicknesses mainly -> 1339/9717 disease/infection rate
+# 0.13779973242
+  
+cleaning_injury_types <- as.data.frame(cleaning_injury_types)
+```
+
+
+```{r echo=TRUE}
+glimpse(cleaning_injury_types)
+```
+Looking at the cleaned data set, we have reclassified the relevant fields into dummy variable representations.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+table_injury_tally <- cleaning_injury_types %>%
+  group_by(type, type_num) %>%
+  tally()
+
+table_injury_tally_weight <- table_injury_tally %>%
+  mutate(weight = n / sum(n)) %>% # this isn't displaying the right percentages?
+  mutate(weighted_num = n*weight)
+
+
+table_injury_tally_types <- subset(table_injury_tally, select = -c(2)) %>%
+  group_by(type) %>%
+  summarize(counts = sum(n)) #total counts per type
+
+knitr::kable(table_injury_tally_types)
+
+knitr::kable(table_injury_tally_weight)
+```
+From looking at our distribution of types of injuries: DTP (Did not play), DTD (Day to day), Out indefinitely, Out for season, these were labeled 1 to 4 respectively from least severe to most severe. Furthermore, our injury type classifications ranged from numbers 1 to 9 where the various types of injuries were classified under the localized area they affect:
+
+knee -	1
+
+hand -	2
+
+back -	3
+
+foot -	4
+
+hip -	5
+
+arm -	6
+
+leg -	7
+
+head -	8
+
+torso -	9
+
+Thus, we can see that for DNP: type 4 (foot), type 1 (knee), and type 7 (leg) injuries are the most common and have had players sit out for a game. 
+
+Similarly, for DTD: type 4 (foot), type 1 (knee), and type 7 (leg) injuries are also the most common that had players sit out for multiple games.
+
+For injury type to be severe, I assume that any injury rendering a player to be out for the season (4) or indefinitely (3) would be severe. For out indefinitely:  type 4 (foot), type 1 (knee) and type 2 (hand) injuries cause players to be out indefinitely the most frequent.
+
+Lastly, for out for season: type 4 (foot), type 1 (knee), and type 7 (leg) injuries are the most common for season ending incidences for NBA players.
+
+```{r echo=FALSE}
+table_injury_tally %>%
+  ggplot(aes(x = type_num, y = n)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "NBA Injury Count from October 2010 to October 2020",
+       subtitle = "By Injury Type 1 to 9",
+       x = "Type Number",
+       y = "Case Count",
+       caption = str_c("Created by: David Wong for STA303, U of T\n Scource: NBA Stats API\n"
+                       )) +
+  scale_fill_manual(values = c("#86BCB6", "#B9CA5D")) + 
+  theme(legend.title = element_blank(), legend.position = c(0.15,0.8)) +
+  scale_x_continuous(limits = c(0, 10))
+```
+
+Looking at this from a different perspective, we can map out the frequencies of cases of each injury type (1 to 9) where it seems type 1, type 4, and type 7 are by far the most frequent injuries in the NBA. 
+
+
+```{r}
+table_injury_tally_weight %>%
+  ggplot(aes(x = type_num, y = weighted_num)) +
+  geom_point() +
+  theme_minimal() +
+  labs(title = "NBA Injury Count from October 2010 to October 2020 Weighted by Sample Proportion",
+       subtitle = "By Injury Type 1 to 9",
+       x = "Type Number",
+       y = "Case Count",
+       caption = str_c("Created by: David Wong for STA303, U of T\n Scource: NBA Stats API\n"
+                       )) +
+  scale_fill_manual(values = c("#86BCB6", "#B9CA5D")) + 
+  theme(legend.title = element_blank(), legend.position = c(0.15,0.8)) +
+  scale_x_continuous(limits = c(0, 10))
+```
+To further examine the distribution of points, we weighted each injury type by its population proportions multiplied by the counts of the injury type occurrence. This shows the relative disparity between the frequencies of incidents better.
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+player_injury_type <- cleaning_injury_types %>%
+  group_by(Relinquished, Rank) %>%
+  tally()
+
+glimpse(player_injury_type)
+
+filtered_player_injury_type <- player_injury_type %>%
+  filter(Rank == 4 | Rank == 3) #season ending or out indefinitely
+
+glimpse(filtered_player_injury_type)
+```
+Now let's look at the jury type counts per NBA player during the past decade. In the first table, you can see that there are 1901 NBA players that have had various types of injuries within the past decade. Furthermore, in the following table, if we filter out the most severe injuries (rank 3 and 4 being out indefinitely and season ending respectively), 776 incidences among NBA players have had a severe injury during the past decade. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+player_sums_type34 <- filtered_player_injury_type %>%
+  group_by(Relinquished) %>%
+  summarize(counts = sum(n))
+
+glimpse(player_sums_type34)
+
+```
+Now if we look at this on a unique basis and count up all of the total severe injuries (rank 3 or 4) per NBA player, we can see how many severe injuries each NBA player has accumulated within the past decade. There are 584 unique NBA players that have had a severe injury whereas there are 776 occurrences of severe injuries happening among the 584 players. Now where is LeBron James?
+
+```{r echo=FALSE}
+lebron_james_34 <- player_sums_type34 %>%
+  filter(Relinquished == "LeBron James")
+
+knitr::kable(lebron_james_34)
+```
+LeBron James has had a total of only 2 severe injuries in the past decade; and this was in 2019 only. 
+
+```{r echo=FALSE}
+lebron_james_total <- cleaning_injury_types %>%
+  filter(Relinquished == "LeBron James")
+
+knitr::kable(lebron_james_total)
+```
+Taking a look at LeBron's total injury history in the past decade, there are only 15 incidences in the past decade where LeBron has sustained any form of injury, where 13/15 is not severe and 2/15 are severe.
+
+
+```{r echo=FALSE}
+more_than_five <- player_sums_type34 %>%
+  filter(counts >= 5) %>% 
+  arrange(desc(counts))
+
+knitr::kable(more_than_five)
+```
+Next, we are going to filter out all of the NBA players that have had more than 5 occurrences of severe injuries happening in the past decade. We chose 5 people in a 10 year period, that would mean this player spent half of the decade essentially doing some form of long-term rehabilitation for their injuries. Unsurprisingly, Blake Griffin and Derek Rose place at the top of this list. There are 92 players with 5 or more severe injuries during the past decade in the NBA. 
+
+Given the probability to get an injury of rank 3 or 4 is 584/8478 and that of the 584 rank injuries, 92 players have had severe injuries at least 5 times within the past 10 years, how big of an outlier is Lebron James who only received an injury of rank 3 or 4 twice in the past decade?
+
+```{r include=FALSE}
+filtered_player_injury_type$ID <- cumsum(!duplicated(filtered_player_injury_type[1])) #based off players only make IDs
+```
+
+
+```{r echo=FALSE}
+summary(m1 <- glm(ID ~ Rank + n, family="poisson", data=filtered_player_injury_type))
+```
+Firstly, let's determine whether or not injury severity even is related to the type of player receiving them. We mapped a unique ID for each NBA player regardless of the injury type, only the severity of the injury (rank). I applied a Poisson Generalized Linear Model, aka a log-linear model, to understand the counts of cases (n) and severity of injury (rank) is related to the NBA player. We can see that all of the coefficients are statistically significant and thus the estimators have strong correlation to the NBA player (ID).
+
+```{r echo=FALSE}
+
+cov.m1 <- vcovHC(m1, type="HC0")
+std.err <- sqrt(diag(cov.m1))
+r.est <- cbind(Estimate= coef(m1), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(m1)/std.err), lower.tail=FALSE),
+LL = coef(m1) - 1.96 * std.err,
+UL = coef(m1) + 1.96 * std.err)
+
+r.est
+```
+Looking at the regression model outputs, these are the relevant summary statistics from the Poisson Generalized Linear Model.
+
+```{r echo=FALSE}
+with(m1, cbind(res.deviance = deviance, df = df.residual,
+  p = pchisq(deviance, df.residual, lower.tail=FALSE)))
+```
+With a chi-squared test, we are able to assess the significance of our results. From this, we can see that we have a significant p-value from our model output.
+
+Now that we can conclude that our variables are statistically significant and show strong correlation between NBa player and their injury severity and frequency, we can ask ourselves, "How often do you see a LeBron James?".
+
+```{r echo=FALSE}
+two_or_less <- player_sums_type34 %>%
+  filter(counts <= 2)
+
+glimpse(two_or_less)
+```
+Of the total of 584 players in the NBa during the past decade, 367 have had 2 or less severe injuries. However, this is likely because of players entering the NBA much earlier than LeBron as well as players nearing the end of their careers. Let's narrow the scope down to players who have had an all-star appearances at least 5 times. To achieve a level where you're selected for all-star awards means recognition from all levels of the game from spectators to players themselves. The fan vote accounts for 50 percent of the total vote to determine the starters for the NBA All-Star Game. Current players and media members split the other 50 percent.
+
+```{r echo=FALSE}
+Allstars <- injury_data <- read_excel("injuries_2010_2020.xlsx", sheet = 8)
+
+names(Allstars)[names(Allstars) == 'Player'] <- 'Relinquished'
+  
+
+glimpse(Allstars)
+```
+
+This is a list of all-star selections of all time where players have been selected at least 5 times for either all-star or all-aba games (before 1976). 
+
+
+```{r echo=FALSE}
+joined_data <- two_or_less %>%
+  full_join(Allstars, by = "Relinquished", keep = FALSE, na_matches = "never")
+
+joined_data_clean <- joined_data[complete.cases(joined_data), ] %>%
+  arrange(-desc(Rk))
+
+knitr::kable(joined_data_clean)
+```
+
+Looking at all NBA players who have been selected for at least 5 all-star games and filtering for those who have played during the past decade, this is what we get. 'counts' tells you how many severe injuries they've sustained within the past decade, 'Rk' represents their ranking of total all-star selections where 'NBA' and 'ABA' tells you what basketball league they achieved this in. In the table above, we are ranking it by total all-star appearances with LeBron James at the top with 17.
+
+Thus, we can conclude that out of all NBA players who have achieved great success (at least 5 all star selections), only 14 players in total can boast similar achievements while having experienced less than 2 severe injuries in the past decade. Considering that LeBron is in year 18 of the NBA, he has been an all-star for literally 17 of the 18 (94.4%) seasons he has been playing professionally. As a close second, Tim Duncan was in the NBA for 19 seasons, 15 of which he was an all-star as well. 
+
+So we get it, LeBron James is statistically someone who has very frequently achieved a high level of success in the NBA while being widely admired from NBA player and spectators alike. With a career as long as his, an severe injury count of only 2 in a current 18 and on-going year journey, no one really is close to LeBron when considering all factors of longevity, success, and physical invincibility. 
+
+Debates of the Greatest of All Time (GOAT) has always been between players like LeBron, Duncan, Kobe, Jordan, Olajuwon etc... but statistically, LeBron is a prime specimen of what it means to be invincible. 
+
+
+
+
+
+
+
